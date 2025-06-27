@@ -18,6 +18,7 @@
 ## Virtual Enviroment
 - python3 -m venv .venv  &emsp;&emsp;***#To create***
 - pip install virtualenv &emsp;&emsp;&emsp;***#To install***
+- source .venv/bin/activate &emsp; ***#To Activate Enviroment***
 
 ## Protobuf
 - python -m grpc_tools.protoc -I. --python_out=./src --grpc_python_out=./src ./items.proto &emsp;&emsp;***#To create***
