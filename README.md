@@ -8,10 +8,10 @@
 - watch -n 1 'docker compose ps' ** To see services every one second **
 
 ## Curl commands
-- curl http://localhost:5000/health                           ** To check the health status **
-- curl -X POST -H "Content-Type: application/json" \          ** To post an item **
+- curl http://localhost:5000/health                           *** To check the health status ***
+- curl -X POST -H "Content-Type: application/json" \          
        -d '{"name":"test item" }'\
-       http://localhost:5000/items
+       http://localhost:5000/items                            ** To post an item **
 - curl http://localhost:5000/items                            ** To print out the list **
 - curl -X POST http://localhost:5000/reset-breaker            ** To reset the breaker **
 
