@@ -1,7 +1,7 @@
 # DSA-LAb3
 ## Docker Compose
 
-- docker compose up -d --build   **To start all the services**
+- docker compose up -d --build   **#To start all the services**
 - docker compose ps              **To see all the started services**
 - docker compose down <----->    **To down/stop any service**
 - docker compose logs -f <___>   **To see the logs of a service**
