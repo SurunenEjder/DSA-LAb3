@@ -1,3 +1,4 @@
+# filepath: /home/vboxuser/dsa/rest/app.py
 from flask import Flask, request, jsonify
 import grpc
 import items_pb2
@@ -8,7 +9,7 @@ import logging
 from pybreaker import CircuitBreaker, CircuitBreakerError
 from functools import wraps
 import json as pyjson
-
+import threading
 
 app = Flask(__name__)
 app.config['JSONIFY_PRETTYPRINT_REGULAR'] = True
@@ -27,8 +28,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # gRPC Configuration
-GRPC_HOST =os.getenv("GRPC_HOST", "localhost") #os.getenv("GRPC_HOST", "grpc-service")
-
+GRPC_HOST = os.getenv("GRPC_HOST", "localhost")
 GRPC_PORT = os.getenv("GRPC_PORT", "50051")
 
 # Enhanced gRPC channel with reliability options
@@ -47,19 +47,20 @@ channel = grpc.insecure_channel(
 class CircuitBreakerMonitor:
     def state_change(self, cb, old_state, new_state):
         logger.info(f"CircuitBreaker state changed from {old_state} to {new_state}")
-        print(f"CircuitBreaker state changed from {old_state} to {new_state}")  #for visibility
-        
+        print(f"CircuitBreaker state changed from {old_state} to {new_state}")
+
     def before_call(self, cb, func, *args, **kwargs):
         pass
+
     def failure(self, cb, exc):
         pass
+
     def success(self, cb):
         pass
-    
 
 breaker = CircuitBreaker(
-    fail_max=3,  # Trip after 3 failures
-    reset_timeout=30,  # 30 second timeout
+    fail_max=3,
+    reset_timeout=30,
     exclude=[
         grpc.StatusCode.NOT_FOUND,
         grpc.StatusCode.INVALID_ARGUMENT
@@ -70,7 +71,8 @@ breaker = CircuitBreaker(
 
 stub = items_pb2_grpc.ItemServiceStub(channel)
 
-# Decorator for retry logic
+
+# This decorator retries gRPC calls with exponential backoff
 def retry_grpc(max_retries=3, initial_delay=0.1):
     def decorator(f):
         @wraps(f)
@@ -84,7 +86,7 @@ def retry_grpc(max_retries=3, initial_delay=0.1):
                         raise
                     logger.warning(f"Attempt {attempt + 1} failed, retrying in {delay}s...")
                     time.sleep(delay)
-                    delay *= 2  # Exponential backoff
+                    delay *= 2
                 except Exception as e:
                     logger.error(f"Unexpected error: {str(e)}")
                     raise
@@ -92,9 +94,9 @@ def retry_grpc(max_retries=3, initial_delay=0.1):
     return decorator
 
 # Connection verification
+# This function checks if the gRPC connection is active
 def verify_grpc_connection():
     try:
-        # Use ListAllItems as a safe connection test
         list(stub.ListAllItems(items_pb2.Empty(), timeout=1))
         return True
     except grpc.RpcError as e:
@@ -105,21 +107,20 @@ def verify_grpc_connection():
 @app.route('/health', methods=['GET'])
 def health_check():
     try:
-        # Test both channel and service health
         channel_ready = grpc.channel_ready_future(channel).result(timeout=1)
         try:
             list(stub.ListAllItems(items_pb2.Empty(), timeout=1))
             grpc_status = "connected"
         except grpc.RpcError as e:
             if e.code() == grpc.StatusCode.NOT_FOUND:
-                grpc_status = "connected"  # Service is reachable
+                grpc_status = "connected"
             else:
                 grpc_status = f"disconnected ({e.code().name})"
         
         return jsonify({
             "status": "healthy",
             "grpc": grpc_status,
-            "breaker": breaker.current_state,#"open" if breaker.open else "closed",
+            "breaker": breaker.current_state,
             "breaker_failures": breaker.fail_counter,
             "services": {
                 "grpc": f"{GRPC_HOST}:{GRPC_PORT}",
@@ -137,10 +138,8 @@ def health_check():
 def reset_breaker():
     try:
         logger.info("Resetting circuit breaker...")
-        breaker.close()  # Force close regardless of state
+        breaker.close()
         logger.info("Circuit breaker closed")
-        #breaker.reset()  # Reset the breaker
-        #breaker.fail_counter = 0  # Explicitly reset failures
         logger.info("Circuit breaker fully reset")
         return jsonify({
             "status": "success",
@@ -155,7 +154,6 @@ def reset_breaker():
 @app.route('/items', methods=['POST'])
 def create_item():
     try:
-        # Validate JSON
         if not request.is_json:
             return jsonify({'error': 'Request must be JSON'}), 400
 
@@ -163,21 +161,14 @@ def create_item():
         if not data or 'name' not in data:
             return jsonify({'error': 'Name is required'}), 400
 
-
-        response = breaker.call(    
+        response = breaker.call(
             stub.AddItem,
             items_pb2.ItemRequest(
-                id=data.get('id', 0),  # Allow id to be optional
+                id=data.get('id', 0),
                 name=data['name']
             ),
-            timeout=3  # Set a timeout for the gRPC call
+            timeout=3
         )
-        # response = stub.AddItem(
-        #     items_pb2.ItemRequest(
-        #         id=data.get('id', 0),
-        #         name=data['name']
-        #     )
-        # )
         return jsonify({'id': response.id, 'name': response.name}), 201
 
     except pyjson.JSONDecodeError:
@@ -213,10 +204,37 @@ def get_item(item_id):
         logger.error(f"gRPC error: {e.code().name}")
         return jsonify({'error': 'Service error'}), 500
 
+
+# Background thread to monitor gRPC connection
+# This function runs in a separate thread to monitor the gRPC connection
+def monitor_grpc_connection():
+    while True:
+        time.sleep(10)  # Check every 10 seconds
+        if not verify_grpc_connection():
+            logger.warning("gRPC connection lost, attempting to reconnect...")
+            # Re-establish the gRPC channel
+            global channel
+            channel = grpc.insecure_channel(
+                f"{GRPC_HOST}:{GRPC_PORT}",
+                options=[
+                    ('grpc.connect_timeout_ms', 5000),
+                    ('grpc.enable_retries', 1),
+                    ('grpc.keepalive_timeout_ms', 10000),
+                    ('grpc.max_receive_message_length', 100 * 1024 * 1024),
+                    ('grpc.max_send_message_length', 100 * 1024 * 1024)
+                ]
+            )
+            global stub
+            stub = items_pb2_grpc.ItemServiceStub(channel)
+
 if __name__ == '__main__':
     # Verify connection at startup
     if not verify_grpc_connection():
         logger.error("Initial gRPC connection failed")
     
     logger.info(f"Starting REST service on port 5000, connecting to gRPC at {GRPC_HOST}:{GRPC_PORT}")
+    
+    # Start the background thread for monitoring gRPC connection
+    threading.Thread(target=monitor_grpc_connection, daemon=True).start()
+    
     app.run(host="0.0.0.0", port=5000)
